@@ -1,1 +1,9 @@
-/.obsidian
+# Obsidian local configuration
+.obsidian/
+
+# Obsidian trash
+.trash/
+
+# OS files
+.DS_Store
+Thumbs.db
