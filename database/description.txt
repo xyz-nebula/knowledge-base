@@ -1,0 +1,40 @@
+Messages
+- id (INT, PK)
+- uuid (UUID, UK)
+- created_at (DATETIME)
+- sequence (INT)
+- session_uuid (UUID, FK)
+- is_ai (BOOLEAN)
+- text (TEXT)
+
+Session
+- id (INT, PK)
+- uuid (UUID, UK)
+- created_at (DATETIME)
+- name (CHAR(100))
+- user_uuid (UUID, FK)
+- status (INT)
+
+Feedback
+- id (INT, PK)
+- uuid (UUID, UK)
+- created_at (DATETIME)
+- session_uuid (UUID, FK)
+- text (TEXT)
+
+Judgement
+- id (INT, PK)
+- uuid (UUID, UK)
+- created_at (DATETIME)
+- session_uuid (UUID, FK)
+- text (TEXT)
+
+User
+- id (INT, PK)
+- uuid (UUID, UK)
+- created_at (DATETIME)
+- username (CHAR(100))
+- firstname (CHAR(100))
+- lastname (CHAR(100))
+- email (CHAR(100))
+- password (VARCHAR(60))
