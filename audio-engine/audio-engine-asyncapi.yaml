@@ -1,0 +1,249 @@
+asyncapi: 3.0.0
+info:
+  title: Real-Time Audio Engine — WebSocket Messages
+  version: 1.0.0
+  description: >
+    Message-level contract for the same `/v1/audio-stream` WebSocket
+    connection described in the companion OpenAPI document (which covers
+    only the HTTP -> WebSocket handshake). This file is the source of
+    truth for what gets sent over the wire once the socket is open.
+
+defaultContentType: application/json
+
+servers:
+  production:
+    host: api.example.com
+    protocol: wss
+    description: Production WebSocket endpoint
+
+channels:
+  audioStream:
+    address: /v1/audio-stream
+    description: Single bidirectional channel used for auth, control, and audio frames.
+    bindings:
+      ws:
+        method: GET
+        query:
+          type: object
+          properties:
+            protocol:
+              type: string
+              enum: [audio-engine.v1]
+    messages:
+      authPacket:
+        $ref: "#/components/messages/authPacket"
+      controlMessage:
+        $ref: "#/components/messages/controlMessage"
+      authAck:
+        $ref: "#/components/messages/authAck"
+      authError:
+        $ref: "#/components/messages/authError"
+      audioFrame:
+        $ref: "#/components/messages/audioFrame"
+      errorMessage:
+        $ref: "#/components/messages/errorMessage"
+
+operations:
+  clientSendsAuth:
+    action: receive
+    channel:
+      $ref: "#/channels/audioStream"
+    summary: Client sends the auth packet as the first message after the socket opens.
+    messages:
+      - $ref: "#/channels/audioStream/messages/authPacket"
+
+  clientSendsControl:
+    action: receive
+    channel:
+      $ref: "#/channels/audioStream"
+    summary: Client sends pause/resume/stop/close at any point after auth succeeds.
+    messages:
+      - $ref: "#/channels/audioStream/messages/controlMessage"
+
+  serverSendsAuthAck:
+    action: send
+    channel:
+      $ref: "#/channels/audioStream"
+    summary: Server confirms JWT validation succeeded.
+    messages:
+      - $ref: "#/channels/audioStream/messages/authAck"
+
+  serverSendsAuthError:
+    action: send
+    channel:
+      $ref: "#/channels/audioStream"
+    summary: Server rejects the JWT; closes the socket with code 4401 right after sending this.
+    messages:
+      - $ref: "#/channels/audioStream/messages/authError"
+
+  serverStreamsAudio:
+    action: send
+    channel:
+      $ref: "#/channels/audioStream"
+    summary: Server streams audio frames continuously once auth has succeeded.
+    messages:
+      - $ref: "#/channels/audioStream/messages/audioFrame"
+
+  serverSendsError:
+    action: send
+    channel:
+      $ref: "#/channels/audioStream"
+    summary: Server reports an out-of-band error (not specific to auth).
+    messages:
+      - $ref: "#/channels/audioStream/messages/errorMessage"
+
+components:
+  messages:
+    authPacket:
+      name: authPacket
+      title: Auth Packet
+      summary: First message the client must send immediately after the socket opens.
+      payload:
+        $ref: "#/components/schemas/AuthPacket"
+
+    controlMessage:
+      name: controlMessage
+      title: Control Message
+      summary: Client (or server) control instructions sent after successful auth.
+      payload:
+        $ref: "#/components/schemas/ControlMessage"
+
+    authAck:
+      name: authAck
+      title: Auth Ack
+      summary: Sent by the server immediately after successful JWT validation.
+      payload:
+        $ref: "#/components/schemas/AuthAck"
+
+    authError:
+      name: authError
+      title: Auth Error
+      summary: Sent by the server if JWT validation fails.
+      payload:
+        $ref: "#/components/schemas/AuthError"
+
+    audioFrame:
+      name: audioFrame
+      title: Audio Frame
+      summary: Real-time audio payload streamed by the server.
+      payload:
+        $ref: "#/components/schemas/AudioFrame"
+
+    errorMessage:
+      name: errorMessage
+      title: Error Message
+      summary: Generic out-of-band error.
+      payload:
+        $ref: "#/components/schemas/ErrorMessage"
+
+  schemas:
+    AuthPacket:
+      type: object
+      required: [type, token]
+      properties:
+        type:
+          type: string
+          enum: [auth]
+        token:
+          type: string
+          description: JWT access token (RFC 7519), compact-serialized.
+          examples:
+            - eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+        client_info:
+          type: object
+          properties:
+            device_id:
+              type: string
+            app_version:
+              type: string
+
+    ControlMessage:
+      type: object
+      required: [type, action]
+      properties:
+        type:
+          type: string
+          enum: [control]
+        action:
+          type: string
+          enum: [pause, resume, stop, close]
+        reason:
+          type: string
+
+    AuthAck:
+      type: object
+      required: [type, status]
+      properties:
+        type:
+          type: string
+          enum: [auth_ack]
+        status:
+          type: string
+          enum: [success]
+        session_id:
+          type: string
+          format: uuid
+        expires_at:
+          type: string
+          format: date-time
+
+    AuthError:
+      type: object
+      required: [type, code, message]
+      properties:
+        type:
+          type: string
+          enum: [auth_error]
+        code:
+          type: string
+          enum: [invalid_token, expired_token, missing_token, insufficient_scope]
+        message:
+          type: string
+
+    AudioFrame:
+      type: object
+      required: [type, sequence, timestamp, format, payload]
+      properties:
+        type:
+          type: string
+          enum: [audio_frame]
+        sequence:
+          type: integer
+          format: int64
+        timestamp:
+          type: integer
+          format: int64
+        format:
+          $ref: "#/components/schemas/AudioFormat"
+        payload:
+          type: string
+          contentEncoding: base64
+
+    AudioFormat:
+      type: object
+      required: [codec, sample_rate, channels]
+      properties:
+        codec:
+          type: string
+          enum: [opus, pcm_s16le, aac, mp3]
+        sample_rate:
+          type: integer
+          examples: [48000]
+        channels:
+          type: integer
+          examples: [2]
+        bit_depth:
+          type: integer
+          examples: [16]
+
+    ErrorMessage:
+      type: object
+      required: [type, code, message]
+      properties:
+        type:
+          type: string
+          enum: [error]
+        code:
+          type: string
+        message:
+          type: string
