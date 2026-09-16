@@ -1,0 +1,378 @@
+openapi: 3.0.0
+info:
+  title: auth
+  version: v1.0.0
+  description: Authentication microservice - registration, login, activation, and token lifecycle.
+servers: []
+tags:
+  - name: auth
+    description: User authentication and session management
+
+paths:
+  /v1/auth/user/register:
+    post:
+      operationId: AuthUserRegister
+      summary: Register a new user
+      description: >
+        Creates a new user account in a pending-activation state and sends
+        an activation code to the provided email. The account cannot log in
+        until activated via /v1/auth/user/register/activate.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthRegisterRequest'
+      responses:
+        '200':
+          description: Registration accepted, activation pending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthRegisterResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/auth/user/register/activate:
+    post:
+      operationId: AuthUserRegisterActivate
+      summary: Activate a registered account
+      description: >
+        Consumes the one-time activation code sent to the user's email
+        after registration. On success, returns a token pair so the user
+        is signed in immediately.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthActivationRequest'
+      responses:
+        '200':
+          description: Account activated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokens'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '410':
+          $ref: '#/components/responses/GoneError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/auth/user/login:
+    post:
+      operationId: AuthUserLogin
+      summary: Log in with email and password
+      description: >
+        Authenticates a user. If the account has TOTP-based MFA enabled,
+        totp_token must be supplied; omitting it when MFA is enabled
+        returns a 401 with error code `mfa_required`.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthLoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokens'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/auth/token/refresh:
+    post:
+      operationId: AuthTokenRefresh
+      summary: Exchange a refresh token for a new token pair
+      description: >
+        Rotates the refresh token. The previous refresh token is invalidated
+        on success (rotation), so clients must persist the new one.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthRefreshRequest'
+      responses:
+        '200':
+          description: New token pair issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokens'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/auth/user/logout:
+    post:
+      operationId: AuthUserLogout
+      summary: Log out and invalidate the current refresh token
+      tags: [auth]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthLogoutRequest'
+      responses:
+        '204':
+          description: Logged out successfully, no content
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters: {}
+
+  responses:
+    ValidationError:
+      description: Request failed schema or business-rule validation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    UnauthorizedError:
+      description: Invalid credentials, invalid/expired token, or missing MFA code
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    ForbiddenError:
+      description: Account exists but is not permitted to log in (e.g. not yet activated, suspended)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    NotFoundError:
+      description: Referenced resource (e.g. activation code) does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    GoneError:
+      description: Referenced resource existed but is no longer valid (e.g. expired activation code)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    ConflictError:
+      description: Request conflicts with existing state (e.g. email already registered)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    RateLimitError:
+      description: Too many requests
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+  schemas:
+    # --- primitives ---
+    email:
+      type: string
+      format: email
+      maxLength: 254
+
+    username:
+      type: string
+      minLength: 3
+      maxLength: 32
+      pattern: '^[a-zA-Z0-9_.-]+$'
+
+    password:
+      type: string
+      minLength: 8
+      maxLength: 128
+      description: >
+        Plaintext password as submitted by the client over TLS. Server is
+        expected to enforce additional complexity rules and hash before storage.
+
+    first_name:
+      type: string
+      minLength: 1
+      maxLength: 64
+
+    last_name:
+      type: string
+      minLength: 1
+      maxLength: 64
+
+    totp_token:
+      type: string
+      pattern: '^[0-9]{6}$'
+      description: 6-digit TOTP code from the user's authenticator app.
+
+    access_token:
+      type: string
+      description: >
+        Short-lived JWT used to authenticate API requests. Verified locally
+        by any holder of the signing key/JWKS (signature + exp/nbf) — never
+        invalidated server-side, so keep its lifetime short.
+
+    refresh_token:
+      type: string
+      description: Long-lived opaque token used to obtain a new access token.
+
+    activation_code:
+      type: string
+      format: uuid
+      description: Opaque, high-entropy code sent to the user's email on registration.
+
+    error_code:
+      type: string
+      description: Machine-readable, stable error identifier for client branching.
+      example: invalid_credentials
+
+    # --- shared error envelope ---
+    ApiError:
+      type: object
+      properties:
+        code:
+          $ref: '#/components/schemas/error_code'
+        message:
+          type: string
+          description: Human-readable message, safe to display to end users.
+        field:
+          type: string
+          nullable: true
+          description: Name of the offending request field, when applicable (e.g. validation errors).
+      required:
+        - code
+        - message
+
+    # --- token envelope, shared by login/activation/refresh ---
+    AuthTokens:
+      type: object
+      properties:
+        access_token:
+          $ref: '#/components/schemas/access_token'
+        refresh_token:
+          $ref: '#/components/schemas/refresh_token'
+      required:
+        - access_token
+        - refresh_token
+
+    # --- register ---
+    AuthRegisterRequest:
+      type: object
+      properties:
+        email:
+          $ref: '#/components/schemas/email'
+        username:
+          $ref: '#/components/schemas/username'
+        first_name:
+          $ref: '#/components/schemas/first_name'
+        last_name:
+          $ref: '#/components/schemas/last_name'
+        password:
+          $ref: '#/components/schemas/password'
+      required:
+        - email
+        - username
+        - first_name
+        - last_name
+        - password
+
+    AuthRegisterResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending_activation]
+      required:
+        - user_id
+        - status
+
+    # --- login ---
+    AuthLoginRequest:
+      type: object
+      properties:
+        email:
+          $ref: '#/components/schemas/email'
+        password:
+          $ref: '#/components/schemas/password'
+        totp_token:
+          $ref: '#/components/schemas/totp_token'
+      required:
+        - email
+        - password
+
+    # --- activation ---
+    AuthActivationRequest:
+      type: object
+      properties:
+        code:
+          $ref: '#/components/schemas/activation_code'
+      required:
+        - code
+
+    # --- refresh ---
+    AuthRefreshRequest:
+      type: object
+      properties:
+        refresh_token:
+          $ref: '#/components/schemas/refresh_token'
+      required:
+        - refresh_token
+
+    # --- logout ---
+    AuthLogoutRequest:
+      type: object
+      properties:
+        refresh_token:
+          $ref: '#/components/schemas/refresh_token'
+      required:
+        - refresh_token
+
+security: []
