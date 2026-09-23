@@ -1,253 +1,273 @@
 openapi: 3.1.0
+
 info:
   title: Real-Time Audio Engine API
   version: 1.0.0
-  description: >
-    WebSocket-based audio engine. The client opens a single WebSocket
-    connection, sends an auth packet as the first message, and — once the
-    server validates the JWT — the same connection is used to stream
-    real-time audio frames in both directions.
 
-    Note: OpenAPI does not have first-class support for WebSocket message
-    flows (that's what AsyncAPI is for). This document describes the HTTP
-    handshake that upgrades to WebSocket as a path, and documents every
-    message exchanged afterward via `components.schemas` plus the
-    `x-websocket-flow` extension below, so the whole contract lives in one
-    file.
+servers:
+  - url: ws://localhost:8000
+    description: Local WebSocket server
 
 x-websocket-flow:
-  description: Sequence of events over the single websocket connection
+  description: >
+    WebSocket connection flow implemented by the server.
+    Authentication is performed from the token query parameter
+    after the WebSocket handshake is accepted.
+
   steps:
     - step: 1
       actor: client
-      action: Open WebSocket connection to wss://.../v1/audio-stream
+      action: Open WebSocket connection to ws://localhost:8000/v1/audio-stream?token=...
+
     - step: 2
-      actor: client
-      action: Send AuthPacket as the first message (must arrive within auth_timeout_ms)
+      actor: server
+      action: Accept the WebSocket connection with HTTP 101 Switching Protocols.
+
     - step: 3
       actor: server
-      action: Validate JWT access token from AuthPacket
+      action: Read the token query parameter and validate the JWT.
+
     - step: 4a
       actor: server
-      action: On success, send AuthAck { status success } and proceed to audio streaming
+      condition: token is missing
+      action: Close the WebSocket connection with close code 1008 and reason "missing token".
+
     - step: 4b
       actor: server
-      action: On failure, send AuthError and close connection (code 4401)
-    - step: 5
-      actor: server
-      action: Stream AudioFrame messages continuously (binary or base64 JSON) over the same socket
-    - step: 6
-      actor: client
-      action: May send ControlMessage (e.g. pause, resume, stop) at any point after auth
-    - step: 7
-      actor: either
-      action: Either side sends ControlMessage{action=close} or closes the socket to end the session
+      condition: token is invalid
+      action: Close the WebSocket connection with close code 1008 and reason "invalid token".
 
-servers:
-  - url: wss://api.example.com
-    description: Production WebSocket endpoint
+    - step: 5
+      actor: client
+      action: Send AudioInputMessage or ControlMessage over the same WebSocket connection.
+
+    - step: 6
+      actor: server
+      action: Forward audio messages to the local AI realtime service.
+
+    - step: 7
+      actor: server
+      action: Stream AudioFrame messages continuously when audio output is received.
+
+    - step: 8
+      actor: server
+      condition: local AI realtime service returns an error
+      action: Send ErrorMessage over the WebSocket connection.
+
+    - step: 9
+      actor: client
+      action: Send ControlMessage with action pause, resume, stop, or close.
+
+    - step: 10
+      actor: either
+      condition: stop, close, or WebSocket disconnection
+      action: End the current streaming session.
 
 paths:
   /v1/audio-stream:
     get:
-      summary: Negotiate the WebSocket connection for the audio engine
+      summary: WebSocket endpoint for realtime audio streaming
       description: >
-        Standard HTTP Upgrade handshake. On a successful upgrade the server
-        responds with 101 Switching Protocols, after which all further
-        communication (auth, then audio) happens as WebSocket frames per
-        `x-websocket-flow` and the schemas in `components.schemas`.
-      operationId: negotiateAudioStream
-      tags: [audio-stream]
+        WebSocket endpoint implemented by the server.
+        The connection is established using the standard HTTP Upgrade handshake.
+        After the connection is accepted, the server validates the JWT from
+        the `token` query parameter.
+
+        Authentication failures are reported by closing the WebSocket with
+        close code 1008 rather than by returning an HTTP 401 response.
+
+      operationId: audioStream
+      tags:
+        - audio-stream
+
       parameters:
+        - name: token
+          in: query
+          required: true
+          description: JWT access token.
+          schema:
+            type: string
+
         - name: Upgrade
           in: header
           required: true
           schema:
             type: string
-            enum: [websocket]
+            enum:
+              - websocket
+
         - name: Connection
           in: header
           required: true
           schema:
             type: string
-            enum: [Upgrade]
+            enum:
+              - Upgrade
+
         - name: Sec-WebSocket-Key
           in: header
           required: true
           schema:
             type: string
+
         - name: Sec-WebSocket-Version
           in: header
           required: true
           schema:
             type: string
-            enum: ["13"]
+            enum:
+              - "13"
+
         - name: Sec-WebSocket-Protocol
           in: header
           required: false
+          description: >
+            Optional WebSocket subprotocol. The server returns the same
+            value during WebSocket acceptance.
           schema:
             type: string
             example: audio-engine.v1
+
       responses:
         "101":
+          description: Switching Protocols. The WebSocket connection is established.
+
+        "1008":
           description: >
-            Switching Protocols. Connection is now a WebSocket. The client
-            must immediately send an AuthPacket (see x-websocket-flow).
-        "400":
-          description: Malformed upgrade request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-        "401":
-          description: Missing or malformed credentials before upgrade (if pre-checked at handshake)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
+            WebSocket Policy Violation. Used when the token is missing
+            or the JWT is invalid.
+          x-websocket-close-code: 1008
+          x-websocket-close-reasons:
+            - missing token
+            - invalid token
 
 components:
   schemas:
 
-    # ---- Inbound: client -> server ----
-
-    AuthPacket:
+    AudioInputMessage:
       type: object
-      description: First message the client must send immediately after the socket opens.
-      required: [type, token]
+      description: >
+        Client-to-server audio message. The encoded audio payload is
+        forwarded to the local AI realtime service.
+      required:
+        - type
+        - audio
       properties:
         type:
           type: string
-          enum: [auth]
-        token:
+          enum:
+            - audio
+        audio:
           type: string
-          description: JWT access token (RFC 7519), sent as a compact-serialized string.
-          example: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
-        client_info:
-          type: object
-          description: Optional client/session metadata.
-          properties:
-            device_id:
-              type: string
-            app_version:
-              type: string
+          description: Base64-encoded audio payload.
+          contentEncoding: base64
 
     ControlMessage:
       type: object
-      description: Client (or server) control instructions sent after successful auth.
-      required: [type, action]
+      description: >
+        Client-to-server control message. Pause and resume are accepted
+        by the proxy but currently do not trigger a corresponding action
+        in the local AI service.
+      required:
+        - type
+        - action
       properties:
         type:
           type: string
-          enum: [control]
+          enum:
+            - control
+
         action:
           type: string
-          enum: [pause, resume, stop, close]
+          enum:
+            - pause
+            - resume
+            - stop
+            - close
+
         reason:
           type: string
-          description: Optional human-readable reason, mainly used with `stop`/`close`.
-
-    # ---- Outbound: server -> client ----
-
-    AuthAck:
-      type: object
-      description: Sent by the server immediately after successful JWT validation.
-      required: [type, status]
-      properties:
-        type:
-          type: string
-          enum: [auth_ack]
-        status:
-          type: string
-          enum: [success]
-        session_id:
-          type: string
-          format: uuid
-        expires_at:
-          type: string
-          format: date-time
-          description: When the underlying token/session expires; client should re-auth before this.
-
-    AuthError:
-      type: object
-      description: Sent by the server if JWT validation fails. Server closes the socket (code 4401) right after.
-      required: [type, code, message]
-      properties:
-        type:
-          type: string
-          enum: [auth_error]
-        code:
-          type: string
-          enum: [invalid_token, expired_token, missing_token, insufficient_scope]
-        message:
-          type: string
+          description: Optional human-readable reason for stop or close.
 
     AudioFrame:
       type: object
       description: >
-        Real-time audio payload streamed by the server over the same
-        connection once auth succeeds. Sent continuously, one frame per
-        chunk of encoded audio.
-      required: [type, sequence, timestamp, format, payload]
+        Server-to-client audio message generated from
+        `response.output_audio.delta` events received from the local AI
+        realtime service.
+      required:
+        - type
+        - sequence
+        - timestamp
+        - format
+        - payload
       properties:
         type:
           type: string
-          enum: [audio_frame]
+          enum:
+            - audio_frame
+
         sequence:
           type: integer
           format: int64
-          description: Monotonically increasing frame counter, for ordering/loss detection.
+          description: >
+            Monotonically increasing frame counter for the current connection.
+
         timestamp:
           type: integer
           format: int64
-          description: Capture/playback timestamp in milliseconds since epoch or stream start.
+          description: >
+            Unix timestamp in milliseconds at the time the frame is sent.
+
         format:
           $ref: "#/components/schemas/AudioFormat"
+
         payload:
           type: string
+          description: Base64-encoded audio chunk.
           contentEncoding: base64
-          description: >
-            Base64-encoded audio chunk when sent as a JSON text frame.
-            Implementations may instead send this data as a raw binary
-            WebSocket frame prefixed by an equivalent header structure —
-            document whichever transport mode you actually use.
 
     AudioFormat:
       type: object
-      required: [codec, sample_rate, channels]
+      required:
+        - codec
+        - sample_rate
+        - channels
       properties:
         codec:
           type: string
-          enum: [opus, pcm_s16le, aac, mp3]
+          enum:
+            - pcm_s16le
+
         sample_rate:
           type: integer
-          example: 48000
+          example: 24000
+
         channels:
           type: integer
-          example: 2
+          example: 1
+
         bit_depth:
           type: integer
           example: 16
 
     ErrorMessage:
       type: object
-      required: [type, code, message]
+      description: Server-to-client error message for local AI service errors.
+      required:
+        - type
+        - code
+        - message
       properties:
         type:
           type: string
-          enum: [error]
+          enum:
+            - error
+
         code:
           type: string
+          example: LOCALAI_ERROR
+
         message:
           type: string
-
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: >
-        Not used as a standard OpenAPI `security` requirement on the
-        handshake path, since the token is validated in-band as the first
-        WebSocket message (AuthPacket), not as an HTTP Authorization header.
-        Documented here for reference/tooling that expects a securityScheme.
+          description: Serialized local AI error payload.

@@ -1,86 +1,88 @@
 asyncapi: 3.0.0
+
 info:
   title: Real-Time Audio Engine — WebSocket Messages
   version: 1.0.0
   description: >
-    Message-level contract for the same `/v1/audio-stream` WebSocket
-    connection described in the companion OpenAPI document (which covers
-    only the HTTP -> WebSocket handshake). This file is the source of
-    truth for what gets sent over the wire once the socket is open.
+    Message-level contract for the /v1/audio-stream WebSocket connection.
+    The contract describes the messages actually exchanged by the FastAPI
+    WebSocket proxy.
 
 defaultContentType: application/json
 
 servers:
   production:
-    host: api.example.com
-    protocol: wss
-    description: Production WebSocket endpoint
+    host: localhost:8000
+    protocol: ws
+    description: Local FastAPI WebSocket server
 
 channels:
   audioStream:
     address: /v1/audio-stream
-    description: Single bidirectional channel used for auth, control, and audio frames.
+    description: >
+      Bidirectional WebSocket channel. The client authenticates using the
+      token query parameter and may then send control or audio messages.
+      The server streams audio frames and may send errors.
+
     bindings:
       ws:
         method: GET
         query:
           type: object
+          required:
+            - token
           properties:
+            token:
+              type: string
+              description: JWT authentication token.
             protocol:
               type: string
-              enum: [audio-engine.v1]
+              enum:
+                - audio-engine.v1
+              default: audio-engine.v1
+              description: Audio engine protocol version.
+
     messages:
-      authPacket:
-        $ref: "#/components/messages/authPacket"
       controlMessage:
         $ref: "#/components/messages/controlMessage"
-      authAck:
-        $ref: "#/components/messages/authAck"
-      authError:
-        $ref: "#/components/messages/authError"
+
+      audioInputMessage:
+        $ref: "#/components/messages/audioInputMessage"
+
       audioFrame:
         $ref: "#/components/messages/audioFrame"
+
       errorMessage:
         $ref: "#/components/messages/errorMessage"
 
-operations:
-  clientSendsAuth:
-    action: receive
-    channel:
-      $ref: "#/channels/audioStream"
-    summary: Client sends the auth packet as the first message after the socket opens.
-    messages:
-      - $ref: "#/channels/audioStream/messages/authPacket"
+      authError:
+        $ref: "#/components/messages/authError"
 
+      transcriptMessage:
+        $ref: "#/components/messages/transcriptMessage"
+
+operations:
   clientSendsControl:
     action: receive
     channel:
       $ref: "#/channels/audioStream"
-    summary: Client sends pause/resume/stop/close at any point after auth succeeds.
+    summary: Client sends a control command.
     messages:
       - $ref: "#/channels/audioStream/messages/controlMessage"
 
-  serverSendsAuthAck:
-    action: send
+  clientSendsAudio:
+    action: receive
     channel:
       $ref: "#/channels/audioStream"
-    summary: Server confirms JWT validation succeeded.
+    summary: Client sends an input audio chunk to LocalAI.
     messages:
-      - $ref: "#/channels/audioStream/messages/authAck"
-
-  serverSendsAuthError:
-    action: send
-    channel:
-      $ref: "#/channels/audioStream"
-    summary: Server rejects the JWT; closes the socket with code 4401 right after sending this.
-    messages:
-      - $ref: "#/channels/audioStream/messages/authError"
+      - $ref: "#/channels/audioStream/messages/audioInputMessage"
 
   serverStreamsAudio:
     action: send
     channel:
       $ref: "#/channels/audioStream"
-    summary: Server streams audio frames continuously once auth has succeeded.
+    summary: Server streams generated audio frames from LocalAI.
     messages:
       - $ref: "#/channels/audioStream/messages/audioFrame"
 
@@ -88,162 +90,223 @@ operations:
     action: send
     channel:
       $ref: "#/channels/audioStream"
-    summary: Server reports an out-of-band error (not specific to auth).
+    summary: Server reports an error received from LocalAI.
     messages:
       - $ref: "#/channels/audioStream/messages/errorMessage"
 
+  serverSendsAuthError:
+    action: send
+    channel:
+      $ref: "#/channels/audioStream"
+    summary: Server rejects the WebSocket authentication or protocol.
+    messages:
+      - $ref: "#/channels/audioStream/messages/authError"
+
+  serverSendsTranscript:
+    action: send
+    channel:
+      $ref: "#/channels/audioStream"
+    summary: >
+      Server forwards a completed transcript — either the user's input audio
+      transcription or the assistant's spoken response — as it arrives from
+      LocalAI.
+    messages:
+      - $ref: "#/channels/audioStream/messages/transcriptMessage"
+
 components:
   messages:
-    authPacket:
-      name: authPacket
-      title: Auth Packet
-      summary: First message the client must send immediately after the socket opens.
-      payload:
-        $ref: "#/components/schemas/AuthPacket"
-
     controlMessage:
       name: controlMessage
       title: Control Message
-      summary: Client (or server) control instructions sent after successful auth.
+      summary: Client control command.
       payload:
         $ref: "#/components/schemas/ControlMessage"
 
-    authAck:
-      name: authAck
-      title: Auth Ack
-      summary: Sent by the server immediately after successful JWT validation.
+    audioInputMessage:
+      name: audioInputMessage
+      title: Audio Input Message
+      summary: Client input audio chunk forwarded to LocalAI.
       payload:
-        $ref: "#/components/schemas/AuthAck"
-
-    authError:
-      name: authError
-      title: Auth Error
-      summary: Sent by the server if JWT validation fails.
-      payload:
-        $ref: "#/components/schemas/AuthError"
+        $ref: "#/components/schemas/AudioInputMessage"
 
     audioFrame:
       name: audioFrame
       title: Audio Frame
-      summary: Real-time audio payload streamed by the server.
+      summary: Generated audio chunk streamed by the server.
       payload:
         $ref: "#/components/schemas/AudioFrame"
 
     errorMessage:
       name: errorMessage
       title: Error Message
-      summary: Generic out-of-band error.
+      summary: Error reported by the server.
       payload:
         $ref: "#/components/schemas/ErrorMessage"
 
-  schemas:
-    AuthPacket:
-      type: object
-      required: [type, token]
-      properties:
-        type:
-          type: string
-          enum: [auth]
-        token:
-          type: string
-          description: JWT access token (RFC 7519), compact-serialized.
-          examples:
-            - eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
-        client_info:
-          type: object
-          properties:
-            device_id:
-              type: string
-            app_version:
-              type: string
+    authError:
+      name: authError
+      title: Authentication Error
+      summary: WebSocket authentication or protocol validation error.
+      payload:
+        $ref: "#/components/schemas/AuthError"
 
+    transcriptMessage:
+      name: transcriptMessage
+      title: Transcript Message
+      summary: A completed user or assistant transcript.
+      payload:
+        $ref: "#/components/schemas/TranscriptMessage"
+
+  schemas:
     ControlMessage:
       type: object
-      required: [type, action]
+      required:
+        - type
+        - action
       properties:
         type:
           type: string
-          enum: [control]
+          const: control
         action:
           type: string
-          enum: [pause, resume, stop, close]
+          enum:
+            - pause
+            - resume
+            - stop
+            - close
         reason:
           type: string
 
-    AuthAck:
+    AudioInputMessage:
       type: object
-      required: [type, status]
+      required:
+        - type
+        - audio
       properties:
         type:
           type: string
-          enum: [auth_ack]
-        status:
+          const: audio
+        audio:
           type: string
-          enum: [success]
-        session_id:
-          type: string
-          format: uuid
-        expires_at:
-          type: string
-          format: date-time
-
-    AuthError:
-      type: object
-      required: [type, code, message]
-      properties:
-        type:
-          type: string
-          enum: [auth_error]
-        code:
-          type: string
-          enum: [invalid_token, expired_token, missing_token, insufficient_scope]
-        message:
-          type: string
+          contentEncoding: base64
+          description: Base64-encoded input audio forwarded to LocalAI.
 
     AudioFrame:
       type: object
-      required: [type, sequence, timestamp, format, payload]
+      required:
+        - type
+        - sequence
+        - timestamp
+        - format
+        - payload
       properties:
         type:
           type: string
-          enum: [audio_frame]
+          const: audio_frame
+
         sequence:
           type: integer
           format: int64
+          minimum: 1
+
         timestamp:
           type: integer
           format: int64
+          description: Unix timestamp in milliseconds.
+
         format:
           $ref: "#/components/schemas/AudioFormat"
+
         payload:
           type: string
           contentEncoding: base64
+          description: Base64-encoded PCM audio data.
 
     AudioFormat:
       type: object
-      required: [codec, sample_rate, channels]
+      required:
+        - codec
+        - sample_rate
+        - channels
+        - bit_depth
       properties:
         codec:
           type: string
-          enum: [opus, pcm_s16le, aac, mp3]
+          const: pcm_s16le
+
         sample_rate:
           type: integer
-          examples: [48000]
+          const: 24000
+
         channels:
           type: integer
-          examples: [2]
+          const: 1
+
         bit_depth:
           type: integer
-          examples: [16]
+          const: 16
 
     ErrorMessage:
       type: object
-      required: [type, code, message]
+      required:
+        - type
+        - code
+        - message
       properties:
         type:
           type: string
-          enum: [error]
+          const: error
+
         code:
           type: string
+          const: LOCALAI_ERROR
+
         message:
           type: string
+          description: JSON-serialized LocalAI error object.
+
+    AuthError:
+      type: object
+      required:
+        - type
+        - code
+        - message
+      properties:
+        type:
+          type: string
+          const: auth_error
+
+        code:
+          type: string
+          enum:
+            - invalid_protocol
+            - missing_token
+            - expired_token
+            - invalid_token
+
+        message:
+          type: string
+
+    TranscriptMessage:
+      type: object
+      required:
+        - type
+        - role
+        - text
+      properties:
+        type:
+          type: string
+          const: transcript
+
+        role:
+          type: string
+          enum:
+            - user
+            - assistant
+          description: >
+            Who produced the transcript — "user" for input audio
+            transcription, "assistant" for the model's spoken response.
+
+        text:
+          type: string
+          description: The completed transcript text.
